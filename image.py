@@ -1,271 +1,203 @@
 import cv2
 import numpy as np
-import pytesseract
-import imutils
-# import pyplot as plt
-from PIL import Image
+from keras.models import load_model
 
-def order_points(pts):
-    # initialzie a list of coordinates that will be ordered
-    # such that the first entry in the list is the top-left,
-    # the second entry is the top-right, the third is the
-    # bottom-right, and the fourth is the bottom-left
-    rect = np.zeros((4, 2), dtype = "float32")
-    # the top-left point will have the smallest sum, whereas
-    # the bottom-right point will have the largest sum
-    s = pts.sum(axis = 1)
-    rect[0] = pts[np.argmin(s)]
-    rect[2] = pts[np.argmax(s)]
-    # now, compute the difference between the points, the
-    # top-right point will have the smallest difference,
-    # whereas the bottom-left will have the largest difference
-    diff = np.diff(pts, axis = 1)
-    rect[1] = pts[np.argmin(diff)]
-    rect[3] = pts[np.argmax(diff)]
-    # return the ordered coordinates
-    return rect
+model = load_model('model.keras', compile=False)
 
-def four_point_transform(image, pts):
-    # obtain a consistent order of the points and unpack them
-    # individually
-    rect = order_points(pts)
-    (tl, tr, br, bl) = rect
-    # compute the width of the new image, which will be the
-    # maximum distance between bottom-right and bottom-left
-    # x-coordiates or the top-right and top-left x-coordinates
-    widthA = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
-    widthB = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
-    maxWidth = max(int(widthA), int(widthB))
-    # compute the height of the new image, which will be the
-    # maximum distance between the top-right and bottom-right
-    # y-coordinates or the top-left and bottom-left y-coordinates
-    heightA = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
-    heightB = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
-    maxHeight = max(int(heightA), int(heightB))
-    # now that we have the dimensions of the new image, construct
-    # the set of destination points to obtain a "birds eye view",
-    # (i.e. top-down view) of the image, again specifying points
-    # in the top-left, top-right, bottom-right, and bottom-left
-    # order
-    dst = np.array([
-        [0, 0],
-        [maxWidth - 1, 0],
-        [maxWidth - 1, maxHeight - 1],
-        [0, maxHeight - 1]], dtype = "float32")
-    # compute the perspective transform matrix and then apply it
-    M = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
-    # return the warped image
-    return warped
-        
+def scaleAndCentre(img, size, margin=0, background=0):
+	# Scales and centres an image onto a new background square
+	h, w = img.shape[:2]
 
-# Function to preprocess the image
-def preprocess_image(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    thresh = cv2.adaptiveThreshold(blur, 255, 1, 1, 11, 2)
+	def centre_pad(length):
+		# Handles centering for a given length that may be odd or even
+		if length % 2 == 0:
+			side1 = int((size - length) / 2)
+			side2 = side1
+		else:
+			side1 = int((size - length) / 2)
+			side2 = side1 + 1
+		return side1, side2
 
-    thresh = cv2.bitwise_not(thresh)
+	def scale(r, x):
+		return int(r * x)
 
-    return thresh
+	if h > w:
+		t_pad = int(margin / 2)
+		b_pad = t_pad
+		ratio = (size - margin) / h
+		w, h = scale(ratio, w), scale(ratio, h)
+		l_pad, r_pad = centre_pad(w)
+	else:
+		l_pad = int(margin / 2)
+		r_pad = l_pad
+		ratio = (size - margin) / w
+		w, h = scale(ratio, w), scale(ratio, h)
+		t_pad, b_pad = centre_pad(h)
 
-def find_sudoku_grid(image):
-    # Finds the Sudoku grid in the preprocessed image and extracts its contour.
+	img = cv2.resize(img, (w, h))
+	img = cv2.copyMakeBorder(img, t_pad, b_pad, l_pad, r_pad, cv2.BORDER_CONSTANT, None, background)
+	return cv2.resize(img, (size, size))
 
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (7, 7), 3)
+def predict(img):
+    image = img.copy()
 
-    thresh = cv2.adaptiveThreshold(blurred, 255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
-    thresh = cv2.bitwise_not(thresh)
+    image = cv2.resize(image, (28, 28))
 
-    cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE)
-    cnts = imutils.grab_contours(cnts)
-    cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
+    image = image.astype('float32') / 255.0
 
-    puzzleCnt = None
-      
-    # loop over the contours
-    for c in cnts:
-        peri = cv2.arcLength(c, True) 
-        peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        # if our approximated contour has four points, then we can
-        # assume we have found the outline of the puzzle
-        if len(approx) == 4:  
-            puzzleCnt = approx
+    prediction = model.predict(image.reshape(1, 28, 28, 1), batch_size=1)
+
+    return prediction.argmax()
+
+def preProcessImage(image): 
+    blurredImage = cv2.GaussianBlur(image.copy(), (9, 9), 0)
+    segmenetedBlurredImage = cv2.adaptiveThreshold(blurredImage, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    invertedSegmenetedBlurredImage = cv2.bitwise_not(segmenetedBlurredImage, segmenetedBlurredImage)
+    kernel = np.array([[0., 1., 0.], [1., 1., 1.], [0., 1., 0.]], np.uint8)
+    dilatedInvertedSegmentedBlurredImage = cv2.dilate(invertedSegmenetedBlurredImage, kernel)
+
+    # cv2.imwrite(f'images/numbers/test/preprocessed.png', dilatedInvertedSegmentedBlurredImage)
+
+    return dilatedInvertedSegmentedBlurredImage
+
+
+def warpAndCropSudokuImage(img): 
+    contours, hierarchy = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE) 
+
+    # img = cv2.imread('C:\\Users\\zacha\\Projects\\Sudoku\\images\\EasySudokuImage.png')
+    # highlightedContourImage = cv2.drawContours(dilatedInvertedSegmentedBlurredImage, contours, -1, (0, 255, 0), 2)
+
+    corners = None;
+    for c in contours:
+        perimiter = cv2.arcLength(c, True)
+        approx = cv2.approxPolyDP(c, 0.015 * perimiter, True)
+        if len(approx) == 4:
+            # Here we are looking for the largest 4 sided contour
+            corners = approx
             break
         
-    if puzzleCnt is None:
-       raise Exception(("Could not find Sudoku puzzle outline. "
-            "Try debugging your thresholding and contour steps."))
+    corners = [(corner[0][0], corner[0][1]) for corner in corners]
+    topRightCoordinnate, topLeftCoordinate, bottomLeftCoordinate, bottomRightCoordinate = corners[0], corners[1], corners[2], corners[3]
 
-    output = image.copy()
-    cv2.drawContours(output, [puzzleCnt], -1, (0, 255, 0), 2)
-    cv2.imshow("Puzzle Outline", output)
-    cv2.waitKey(0)
+    # Perform pythagorous theorem incase corners aren't vertically aligned
+    widthA = np.sqrt(((bottomRightCoordinate[0] - bottomLeftCoordinate[0]) ** 2) + ((bottomRightCoordinate[1] - bottomLeftCoordinate[1]) ** 2))
+    widthB = np.sqrt(((topRightCoordinnate[0] - topLeftCoordinate[0]) ** 2) + ((topRightCoordinnate[1] - topLeftCoordinate[1]) ** 2))
+    width = max(int(widthA), int(widthB))
 
-    puzzle = four_point_transform(image, puzzleCnt.reshape(4, 2))
-    warped = four_point_transform(gray, puzzleCnt.reshape(4, 2))
+    heightA = np.sqrt(((topRightCoordinnate[0] - bottomRightCoordinate[0]) ** 2) + ((topRightCoordinnate[1] - bottomRightCoordinate[1]) ** 2))
+    heightB = np.sqrt(((topLeftCoordinate[0] - bottomLeftCoordinate[0]) ** 2) + ((topLeftCoordinate[1] - bottomLeftCoordinate[1]) ** 2))
+    height = max(int(heightA), int(heightB))
 
-    # show the output warped image (again, for debugging purposes)
-    cv2.imshow("Puzzle Transform", puzzle)
-    cv2.waitKey(0)
+    dimensions = np.array([[0, 0], [width - 1, 0], [width - 1, height - 1],
+                        [0, height - 1]], dtype="float32")
+    # Convert to Numpy format
+    # prespectiveTransform wants coordinates in order (topleft, topright, bottomright, bottomleft)
+    orderedCornersForTransform = [corners[0], corners[3], corners[2], corners[1]];
+    orderedCornersForTransform = np.array(orderedCornersForTransform, dtype="float32")
+
+    # calculate the perspective transform matrix and warp
+    # the perspective to grab the screen
+    transformations = cv2.getPerspectiveTransform(orderedCornersForTransform, dimensions)
+    croppedImage = cv2.warpPerspective(img, transformations, (width, height))
+
+    # cv2.imwrite(f'images/numbers/test/croppedImage.png', croppedImage)
+
+    return croppedImage
+
+
+def splitImageIntoCells(img):
+    sudokuHeight = np.shape(img)[0]
+    sudokuWidth = np.shape(img)[1]
+    cellHeight = sudokuHeight // 9
+    cellWidth = sudokuWidth // 9
+
+    tempgrid = []
+    for i in range(cellHeight, sudokuHeight + 1, cellHeight):
+        for j in range(cellWidth, sudokuWidth + 1, cellWidth):
+            rows = img[i - cellHeight:i]
+            tempgrid.append([rows[k][j - cellWidth:j] for k in range(len(rows))])
+
+    # Creating the 9X9 grid of images
+    finalgrid = []
+    # 81 cells and starts on iteration 0 so -8 so it only loops 9 times (i.e. 9 grids)
+    for i in range(0, len(tempgrid) - 8, 9):
+        finalgrid.append(tempgrid[i:i + 9])
+
+    # Converting all the cell images to np.array
+    for i in range(9):
+        for j in range(9):
+            finalgrid[i][j] = np.array(finalgrid[i][j])
+
+    return finalgrid
+
+
+
+def extractSudokuCellValues(grid):
+    predictedSudoku = [[None for _ in range(9)] for _ in range(9)]
+    for i in range(9):
+        for j in range(9):
+
+            thresh = 128  # 128 is the middle of black and white in grey scale so anything above 128 goes black and anything below goes white
+            gray = cv2.threshold(grid[i][j], thresh, 255, cv2.THRESH_BINARY)[1]
+
+            # Finds contours meaning the outside coordinates of any shapes, third arguments just condenses coordinates
+            # i.e. instead of (0, 1), (0, 2), (0,3) becomes (0, 1) to (0, 3)
+            # Use RETR_LIST instead of RETR_EXTERNAL as the latter will only take outermost contour, 
+            # so if a number was fully enclosed by lines, it would ignore the number and just take the outermost contour 
+            cnts = cv2.findContours(gray, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+
+            # Grab the first as findContours returns (contours, hierachy)
+            cnts = cnts[0] 
+
+            valid = []
+            for c in cnts:
+                # Find the outermost coordinates to create a rectangle around the shape
+                x, y, w, h = cv2.boundingRect(c)
+
+                # If the shape starts to close to edge (left) or is very thin (i.e. a line on the right), ignore
+                if x < 10 or y < 10 or w < 10 or h < 10:
+                    continue
+
+                valid.append(c)
+
+            # No shape within the middle found, probably empty
+            if not valid:
+                continue
+
+            # Of all found shapes assume the largest one is the number
+            c = max(valid, key=cv2.contourArea)
+
+            # Encapsulate the number by its outermost coordinates and crop 
+            x, y, w, h = cv2.boundingRect(c)
+
+            # Region of interest
+            ROI = gray[y:y + h, x:x + w]
+            
+            # increasing the size of the number allws for better interpreation,
+            # try adjusting the number and you will see the differnce
+            ROI = scaleAndCentre(ROI, 120)
+
+            prediction = predict(ROI)
+            
+            predictedSudoku[i][j] = prediction
+
+            # cv2.imwrite(f'images/numbers/test/{i}{j}.png', ROI)
+
+        
+    return predictedSudoku
+
+def extractSudoku(imgLocation):
+    img = cv2.imread(imgLocation, cv2.IMREAD_GRAYSCALE)
+
+    if (img is None):
+        raise Exception("Image path not found")
     
-    return (puzzle, warped)
+    processedImage = preProcessImage(img)
 
-# def extract_cells(image, grid):
-#     # Warps the input image to extract individual cells from the Sudoku grid.
-#     grid = np.array(grid, dtype="float32")
-#     (tl, bl, br, tr) = grid
+    extractedSudokuImage = warpAndCropSudokuImage(processedImage)
 
-#     widthA = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
-#     widthB = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
-#     heightA = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
-#     heightB = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
+    extractedCells = splitImageIntoCells(extractedSudokuImage)
 
-#     maxWidth = max(int(widthA), int(widthB))
-#     maxHeight = max(int(heightA), int(heightB))
+    finalSudoku = extractSudokuCellValues(extractedCells)
 
-#     dst = np.array([
-#         [0, 0],
-#         [maxWidth - 1, 0],
-#         [maxWidth - 1, maxHeight - 1],
-#         [0, maxHeight - 1]], dtype="float32")
-
-#     # Image.fromarray(dst).show()
-#     test = cv2.resize(image,(maxWidth,maxHeight))
-
-#     M = cv2.getPerspectiveTransform(grid, dst)  # Computes perspective transform matrix
-#     warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))  # Applies perspective transformation
-
-#     cv2.imshow("test", test)
-#     cv2.waitKey(0)
-#     cv2.destroyAllWindows()
-
-#     cell_height = maxHeight // 9
-#     cell_width = maxWidth // 9
-    
-#     cells = []
-#     for y in range(9):
-#         row = []
-#         for x in range(9):
-#             cell = warped[y * cell_height:(y + 1) * cell_height, x * cell_width:(x + 1) * cell_width]
-#             row.append(cell)
-      
-#         cells.append(row)
-
-#     return cells
-
-def remove_border(image, border_width):
-    # Get image dimensions
-    height, width = image.shape[:2]
-
-    # Crop the image to remove the border
-    cropped_image = image[border_width:height - border_width, border_width:width - border_width]
-
-    return cropped_image
-
-def extract_digit(cell, debug=False):
-    # apply automatic thresholding to the cell and then clear any
-    # connected borders that touch the border of the cell
-    thresh = cv2.threshold(cell, 0, 255,
-        cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
-    thresh = clear_border(thresh)
-    # check to see if we are visualizing the cell thresholding step
-    if debug:
-        cv2.imshow("Cell Thresh", thresh)
-        cv2.waitKey(0)
-
-    cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE)
-    cnts = imutils.grab_contours(cnts)
-    # if no contours were found than this is an empty cell
-    if len(cnts) == 0:
-        return None
-    # otherwise, find the largest contour in the cell and create a
-    # mask for the contour
-    c = max(cnts, key=cv2.contourArea)
-    mask = np.zeros(thresh.shape, dtype="uint8")
-    cv2.drawContours(mask, [c], -1, 255, -1)
-
-    (h, w) = thresh.shape
-    percentFilled = cv2.countNonZero(mask) / float(w * h)
-    # if less than 3% of the mask is filled then we are looking at
-    # noise and can safely ignore the contour
-    if percentFilled < 0.03:
-        return None
-    # apply the mask to the thresholded cell
-    digit = cv2.bitwise_and(thresh, thresh, mask=mask)
-    # check to see if we should visualize the masking step
-    if debug:
-        cv2.imshow("Digit", digit)
-        cv2.waitKey(0)
-    # return the digit to the calling function
-    return digit
-
-# def ocr_cells(cells):
-#     # Performs OCR on the extracted cells to recognize digits.
-#     sudoku_grid = []
-#     for y, row in enumerate(cells):
-#         row_digits = []
-#         for x, cell in enumerate(row):
-#             # Use pytesseract for OCR
-#             # cv2.imshow(f"Cell ({x}, {y})", cell)
-#             # cv2.waitKey(0)
-#             # cv2.destroyAllWindows()
-#             digit = pytesseract.image_to_string(cell, config='--psm 10 --oem 3 -c tessedit_char_whitelist=0123456789')
-#             if digit.isdigit():
-#                 row_digits.append(int(digit))
-#             else:
-#                 row_digits.append(0)  # If OCR fails, mark it as 0
-#         sudoku_grid.append(row_digits)
-#     return sudoku_grid
-
-image = cv2.imread("./images/EasySudokuImage.png")
-
-image = imutils.resize(image, width=600)
-# preProcessedImage = preprocess_image(image)
-(puzzle, warped) = find_sudoku_grid(image)
-
-stepX = warped.shape[1] // 9
-stepY = warped.shape[0] // 9
-
-cellLocs = []
-
-board = []
-
-for y in range(0, 9):
-    # initialize the current list of cell locations
-    row = []
-    for x in range(0, 9):
-        # compute the starting and ending (x, y)-coordinates of the
-        # current cell
-        startX = x * stepX
-        startY = y * stepY
-        endX = (x + 1) * stepX
-        endY = (y + 1) * stepY
-        # add the (x, y)-coordinates to our cell locations list
-        row.append((startX, startY, endX, endY))
-          
-        cell = warped[startY:endY, startX:endX]
-        digit = extract_digit(cell, True)
-        # verify that the digit is not empty
-        if digit is not None:
-            # resize the cell to 28x28 pixels and then prepare the
-            # cell for classification
-            roi = cv2.resize(digit, (28, 28))
-            roi = roi.astype("float") / 255.0
-            # roi = img_to_array(roi)
-            roi = np.expand_dims(roi, axis=0)
-            # classify the digit and update the Sudoku board with the
-            # prediction
-            pred = pytesseract.image_to_string(cell, config='--psm 10 --oem 3 -c tessedit_char_whitelist=0123456789')
-            board[y, x] = pred
-    # add the row to our cell locations
-    cellLocs.append(row)
-
-print (board)
-
-
+    return finalSudoku
