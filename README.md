@@ -1,3 +1,6 @@
+
+https://github.com/user-attachments/assets/c42759cb-8415-4544-a15c-0c4aa15db504
+
 # My Sudoku Solver
 
 I first began this project for my apprenticeship under the python module as I enjoy solving the NYT sudokus so why not! 
